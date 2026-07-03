@@ -7,14 +7,18 @@ from langchain_community.llms import HuggingFaceHub
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
-# 1. Pull the token from your Streamlit Cloud secrets manager
+# 1. Pull the token from your Streamlit Cloud secrets manager safely
 hf_token = st.secrets.get("HUGGINGFACEHUB_API_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
 
-# 2. Pass the token directly into the initialization parameters
+# 2. Fully correct initialization with task, repo, token, and model arguments explicitly set
 llm = HuggingFaceHub(
     repo_id="mistralai/Mixtral-8x7B-Instruct-v0.1",
-    huggingfacehub_api_token=hf_token,  # This prevents the validation crash
-    model_kwargs={"temperature": 0.2, "max_new_tokens": 1000}
+    task="text-generation",
+    huggingfacehub_api_token=hf_token,
+    model_kwargs={
+        "temperature": 0.2, 
+        "max_new_tokens": 1000
+    }
 )
 
 def extract_text_from_pdf(pdf_file):
