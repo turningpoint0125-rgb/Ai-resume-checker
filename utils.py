@@ -1,7 +1,6 @@
 import os
 import re
 import time
-import json
 import streamlit as st
 from PyPDF2 import PdfReader
 from huggingface_hub import InferenceClient
@@ -19,17 +18,27 @@ def extract_text_from_pdf(file_obj):
     except Exception as e:
         return ""
 
+def sanitize_output_text(text):
+    """Cleans up stray markdown brackets and characters."""
+    if not text:
+        return ""
+    cleaned = re.sub(r"[\{\}\[\]'\"]", "", text)
+    cleaned = re.sub(r",\s*,", ",", cleaned)
+    return cleaned.strip("*").strip()
+
 def analyze_resume(resume_text, job_description):
-    """Scans candidate resume data using structural JSON matching to prevent interface layout leaks."""
-    # Emergency fallback definitions
+    """Scans candidate resume data with robust keyword boundaries to prevent leaks."""
+    # Emergency local backups
     name_match = re.search(r"CANDIDATE PROFILE:\s*([^\n]+)", resume_text, re.IGNORECASE)
     if not name_match:
         name_match = re.search(r"Name:\s*([^\n]+)", resume_text, re.IGNORECASE)
+    
     extracted_name = name_match.group(1).strip() if name_match else "Candidate Profile"
 
     jd_words = set(re.findall(r'\w+', job_description.lower()))
     resume_words = set(re.findall(r'\w+', resume_text.lower()))
     common_words = jd_words.intersection(resume_words)
+    
     sim_score = int((len(common_words) / max(len(jd_words), 1)) * 100)
     sim_score = min(max(sim_score, 15), 95)
 
@@ -60,33 +69,25 @@ def analyze_resume(resume_text, job_description):
     try:
         client = InferenceClient(model="Qwen/Qwen2.5-Coder-7B-Instruct", token=hf_token)
         
-        system_instructions = """You are an advanced neural ATS screening engine. You must profile candidate data explicitly using valid JSON layout strings. 
-Return a raw JSON object matching this structure exactly. Do not add markdown around it, do not include HTML formatting, and do not use unescaped characters.
-
-JSON Key Requirements:
-- "name": String containing candidate name.
-- "age": Short string containing age value or short estimation (e.g., "31 (Est.)").
-- "match_percentage": Integer between 0 and 100.
-- "decision": Either "HIRE" or "REJECT".
-- "matching_skills": Comma-separated string of matched technical skills.
-- "missing_skills": Comma-separated string of missing skills specific to this candidate.
-- "education": String summarizing found degrees and academic institutions.
-- "questions": An array string containing exactly 5 numbered screening questions without HTML wrapping.
-
-Example Output Format:
-{
-  "name": "Alex Doe",
-  "age": "29",
-  "match_percentage": 85,
-  "decision": "HIRE",
-  "matching_skills": "Python, SQL, AWS",
-  "missing_skills": "Docker, Kubernetes",
-  "education": "B.Sc Computer Science",
-  "questions": "1. First question?\\n2. Second question?\\n3. Third question?\\n4. Fourth question?\\n5. Fifth question?"
-}"""
-
-        user_content = f"JOB REQUIREMENTS:\n{job_description}\n\nCANDIDATE RESUME TEXT:\n{resume_text}"
+        system_instructions = """You are an advanced neural ATS screening engine. Profile the candidate details accurately based on the provided resume text.
         
+CRITICAL FORMAT RULES:
+1. For the AGE field, output ONLY the number or a short estimate (e.g., "31 (Est.)"). Max 3 words.
+2. Ensure every single block label starts on a brand new line.
+
+Respond ONLY using this direct template format:
+NAME: [Candidate Name]
+AGE: [Short value or short estimation]
+MATCH_PERCENTAGE: [0-100 number only]
+DECISION: [HIRE or REJECT]
+MATCHING_SKILLS: [Matched technical skills]
+MISSING_SKILLS: [Missing skills or None]
+EDUCATION: [Degrees and schools found]
+QUESTIONS: 1. [Q1]\n2. [Q2]\n3. [Q3]\n4. [Q4]\n5. [Q5]"""
+
+        user_content = f"JOB:\n{job_description}\n\nRESUME:\n{resume_text}"
+        
+        # Retry loop block for network reliability
         raw_response = None
         for attempt in range(3):
             try:
@@ -95,7 +96,7 @@ Example Output Format:
                         {"role": "system", "content": system_instructions},
                         {"role": "user", "content": user_content}
                     ],
-                    max_tokens=700
+                    max_tokens=600
                 )
                 raw_response = chat_completion.choices[0].message.content
                 if raw_response:
@@ -108,36 +109,51 @@ Example Output Format:
         if not raw_response:
             return fallback_results
 
-        # Locate clean JSON structure inside the payload block
-        json_clean = raw_response.strip()
-        if "```json" in json_clean:
-            json_clean = json_clean.split("```json")[1].split("```")[0].strip()
-        elif "```" in json_clean:
-            json_clean = json_clean.split("```")[1].split("```")[0].strip()
+        # Lookahead helper to safely extract fields without line bleeding
+        def parse_tag(field_tag, text_source, default=""):
+            pattern = rf"{field_tag}:\s*(.*?)(?=\s*(?:\*\*|\b)(?:NAME|AGE|MATCH_PERCENTAGE|DECISION|MATCHING_SKILLS|MISSING_SKILLS|MISSING|EDUCATION|QUESTIONS):|$)"
+            match = re.search(pattern, text_source, re.DOTALL | re.IGNORECASE)
+            if match:
+                return sanitize_output_text(match.group(1))
+            return default
 
-        parsed = json.loads(json_clean)
+        parsed_name = parse_tag("NAME", raw_response, extracted_name)
+        parsed_age = parse_tag("AGE", raw_response, "N/A")
+        
+        if len(parsed_age) > 15:
+            digits = re.findall(r'\d+', parsed_age)
+            parsed_age = f"{digits[0]} (Est.)" if digits else "N/A"
 
-        # Enforce clean data strings on values to make sure text renders properly
-        def string_clean(val):
-            if not val:
-                return ""
-            return re.sub(r'<[^>]*>', '', str(val)).strip()
+        score_text = parse_tag("MATCH_PERCENTAGE", raw_response, "")
+        score_digits = re.sub(r'\D', '', score_text)
+        final_score = int(score_digits[:2]) if score_digits else sim_score
 
-        # Safely capture match metric conversions
-        try:
-            score = int(parsed.get("match_percentage", sim_score))
-        except:
-            score = sim_score
+        parsed_decision = parse_tag("DECISION", raw_response, "HIRE" if final_score >= 60 else "REJECT").upper()
+        parsed_matching = parse_tag("MATCHING_SKILLS", raw_response, "Identified core matches.")
+        
+        # Try matching "MISSING_SKILLS" first; if the model outputs "MISSING:", fall back to extracting that instead
+        parsed_missing = parse_tag("MISSING_SKILLS", raw_response, "")
+        if not parsed_missing:
+            parsed_missing = parse_tag("MISSING", raw_response, "None")
+            
+        parsed_edu = parse_tag("EDUCATION", raw_response, "Verified credentials.")
+        
+        q_match = re.search(r"QUESTIONS:\s*(.*)", raw_response, re.DOTALL | re.IGNORECASE)
+        parsed_questions = sanitize_output_text(q_match.group(1)) if q_match else fallback_results["questions"]
+
+        # ONLY FIX: If any stray raw HTML or code container tokens appear at the end, drop them cleanly
+        if "<" in parsed_questions:
+            parsed_questions = parsed_questions.split("<")[0].strip()
 
         return {
-            "name": string_clean(parsed.get("name")) or extracted_name,
-            "age": string_clean(parsed.get("age")) or "N/A",
-            "match_percentage": score,
-            "decision": string_clean(parsed.get("decision")).upper() or ("HIRE" if score >= 60 else "REJECT"),
-            "matching_skills": string_clean(parsed.get("matching_skills")) or "Identified core matches.",
-            "missing_skills": string_clean(parsed.get("missing_skills")) or "None",
-            "education": string_clean(parsed.get("education")) or "Verified credentials.",
-            "questions": string_clean(parsed.get("questions")) or fallback_results["questions"]
+            "name": parsed_name if parsed_name else extracted_name,
+            "age": parsed_age if parsed_age else "N/A",
+            "match_percentage": final_score,
+            "decision": "HIRE" if "HIRE" in parsed_decision else "REJECT",
+            "matching_skills": parsed_matching,
+            "missing_skills": parsed_missing if parsed_missing else "None",
+            "education": parsed_edu,
+            "questions": parsed_questions
         }
         
     except Exception as e:
