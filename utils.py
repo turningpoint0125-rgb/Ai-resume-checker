@@ -1,6 +1,5 @@
 import os
 import re
-import json
 import streamlit as st
 from PyPDF2 import PdfReader
 from huggingface_hub import InferenceClient
@@ -18,10 +17,11 @@ def extract_text_from_pdf(file_obj):
         return ""
 
 def analyze_resume(resume_text, job_description):
-    # Heuristic fallback setups
+    # Original rule-based emergency backups
     name_match = re.search(r"CANDIDATE PROFILE:\s*([^\n]+)", resume_text, re.IGNORECASE)
     if not name_match:
         name_match = re.search(r"Name:\s*([^\n]+)", resume_text, re.IGNORECASE)
+    
     extracted_name = name_match.group(1).strip() if name_match else "Candidate Profile"
 
     jd_words = set(re.findall(r'\w+', job_description.lower()))
@@ -56,57 +56,75 @@ def analyze_resume(resume_text, job_description):
         return fallback_results
 
     try:
+        # Keeping your preferred model client target
         client = InferenceClient(model="Qwen/Qwen2.5-Coder-7B-Instruct", token=hf_token)
         
-        # Enforcing JSON format constraints via system prompt instructions
-        system_instructions = """You are an expert neural ATS matching scanner. You must parse the resume against the job description and respond ONLY with a valid JSON object matching this structure:
-{
-  "name": "Candidate Name",
-  "age": "Age or Estimated Age based on timelines",
-  "match_percentage": 75,
-  "decision": "HIRE" or "REJECT",
-  "matching_skills": "Comma-separated list of matches",
-  "missing_skills": "List of missing skills",
-  "education": "Degrees and schools found",
-  "questions": "1. Question 1\\n2. Question 2\\n3. Question 3\\n4. Question 4\\n5. Question 5"
-}
-Do not write any text outside of the raw JSON code block."""
-
-        user_content = f"JOB DESCRIPTION:\n{job_description}\n\nRESUME TEXT:\n{resume_text}"
+        # STRICT CONTROL: Forcing a 2-4 word absolute limit on the AGE key so it never writes paragraphs again
+        system_instructions = """You are an advanced neural ATS screening engine. Profile the candidate details accurately based on the provided resume text.
         
-        # Requesting strict JSON configuration structure from the chat model completion endpoint
+CRITICAL FORMAT RULES:
+1. For the AGE field, output ONLY the number or a very short 2-3 word estimate (e.g., "26", "27 (Est.)", or "30"). Do NOT write sentences, explanations, or reference current years. Keep it ultra-short.
+2. For all fields, output exactly what is asked without conversational intro text.
+
+Respond ONLY using this direct template format:
+NAME: [Name]
+AGE: [Short age or short estimate only]
+MATCH_PERCENTAGE: [0-100 number]
+DECISION: [HIRE or REJECT]
+MATCHING_SKILLS: [Skills found in resume matching the JD]
+MISSING_SKILLS: [Required JD elements missing from the resume]
+EDUCATION: [Degrees found]
+QUESTIONS: 1. [Q1]\n2. [Q2]\n3. [Q3]\n4. [Q4]\n5. [Q5]"""
+
+        user_content = f"JOB:\n{job_description}\n\nRESUME:\n{resume_text}"
+        
         chat_completion = client.chat_completion(
             messages=[
                 {"role": "system", "content": system_instructions},
                 {"role": "user", "content": user_content}
             ],
-            max_tokens=600,
-            response_format={"type": "json_object"}
+            max_tokens=450
         )
         
-        raw_output = chat_completion.choices[0].message.content.strip()
+        response = chat_completion.choices[0].message.content
         
-        # Parse JSON payload structure directly safely
-        data = json.loads(raw_output)
+        # Original clean text parsing blocks
+        def extract_field(field_name, text_source, default_val=""):
+            pattern = rf"{field_name}:\s*(.*?)(?=\n(?:NAME|AGE|MATCH_PERCENTAGE|DECISION|MATCHING_SKILLS|MISSING_SKILLS|EDUCATION|QUESTIONS):|$)"
+            match = re.search(pattern, text_source, re.DOTALL | re.IGNORECASE)
+            return match.group(1).strip() if match else default_val
+
+        parsed_name = extract_field("NAME", response, extracted_name)
         
-        # Clean score logic extraction
-        raw_score = data.get("match_percentage", sim_score)
-        try:
-            final_score = int(re.sub(r'\D', '', str(raw_score)))
-        except:
-            final_score = sim_score
-            
+        # Clean up any leftover sentence details if the model slips up
+        parsed_age = extract_field("AGE", response, "N/A").strip("*")
+        if len(parsed_age) > 15:
+            # Emergency extraction: pull the first number found if it wrote a long paragraph
+            age_nums = re.findall(r'\d+', parsed_age)
+            parsed_age = f"{age_nums[0]} (Est.)" if age_nums else "N/A"
+        
+        parsed_score_str = extract_field("MATCH_PERCENTAGE", response, "")
+        percentage_str = re.sub(r'\D', '', parsed_score_str)
+        final_score = int(percentage_str[:2]) if percentage_str else sim_score
+
+        parsed_decision = extract_field("DECISION", response, "HIRE" if final_score >= 60 else "REJECT")
+        parsed_matching = extract_field("MATCHING_SKILLS", response, "Identified core matches.")
+        parsed_missing = extract_field("MISSING_SKILLS", response, "Review criteria details manually.")
+        parsed_edu = extract_field("EDUCATION", response, "Verified credentials.")
+        
+        q_match = re.search(r"QUESTIONS:\s*(.*)", response, re.DOTALL | re.IGNORECASE)
+        parsed_questions = q_match.group(1).strip() if q_match else fallback_results["questions"]
+        
         return {
-            "name": str(data.get("name", extracted_name)),
-            "age": str(data.get("age", "N/A")),
+            "name": parsed_name,
+            "age": parsed_age,
             "match_percentage": final_score,
-            "decision": str(data.get("decision", "HIRE" if final_score >= 60 else "REJECT")).upper(),
-            "matching_skills": str(data.get("matching_skills", "Identified core matches.")),
-            "missing_skills": str(data.get("missing_skills", "Review criteria details manually.")),
-            "education": str(data.get("education", "Verified credentials.")),
-            "questions": str(data.get("questions", fallback_results["questions"]))
+            "decision": parsed_decision,
+            "matching_skills": parsed_matching,
+            "missing_skills": parsed_missing,
+            "education": parsed_edu,
+            "questions": parsed_questions
         }
         
     except Exception as e:
-        # If any validation step/JSON decoding hits an unexpected failure, cleanly use robust fallbacks
         return fallback_results
