@@ -75,7 +75,7 @@ QUESTIONS: 1. [Q1]\n2. [Q2]\n3. [Q3]\n4. [Q4]\n5. [Q5]"""
 
         user_content = f"JOB:\n{job_description}\n\nRESUME:\n{resume_text}"
         
-        # UPDATED: Using chat_completion to conform to the required conversational structure
+        # FIX: Switched from text_generation to chat_completion to accommodate the free provider task change
         chat_completion = client.chat_completion(
             messages=[
                 {"role": "system", "content": system_instructions},
