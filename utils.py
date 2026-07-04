@@ -31,7 +31,6 @@ def analyze_resume(resume_text, job_description):
     sim_score = int((len(common_words) / max(len(jd_words), 1)) * 100)
     sim_score = min(max(sim_score, 15), 95)
 
-    # 2. Check every possible token variant in secrets
     hf_token = None
     if hasattr(st, "secrets"):
         if "HUGGINGFACEHUB_API_TOKEN" in st.secrets:
@@ -57,28 +56,35 @@ def analyze_resume(resume_text, job_description):
         return fallback_results
 
     try:
-        # Connect explicitly to the free lightweight instruction instance
+        # Connect explicitly to the free conversational-supported instance
         client = InferenceClient(model="meta-llama/Llama-3.2-3B-Instruct", token=hf_token)
         
-        prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-        You are an advanced neural ATS screening engine. Profile the candidate details accurately based on the provided resume text.
-        You must extract the candidate's age or logically calculate/estimate it based on graduation or work timelines (e.g., 24 or 26 (Est.)).
-        You must look closely for previous company experience or professional internships.
-        You must provide exactly 5 targeted screening technical questions.
-        Respond ONLY using this direct template format:
-        NAME: [Name]
-        AGE: [Age value or Estimated age]
-        MATCH_PERCENTAGE: [0-100 number]
-        DECISION: [HIRE or REJECT]
-        MATCHING_SKILLS: [Skills found in resume matching the JD]
-        MISSING_SKILLS: [Required JD elements missing from the resume]
-        EDUCATION: [Degrees found]
-        QUESTIONS: 1. [Q1]\n2. [Q2]\n3. [Q3]\n4. [Q4]\n5. [Q5]<|eot_id|><|start_header_id|>user<|end_header_id|>
-        JOB: {job_description}
-        RESUME: {resume_text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
+        system_instructions = """You are an advanced neural ATS screening engine. Profile the candidate details accurately based on the provided resume text.
+You must extract the candidate's age or logically calculate/estimate it based on graduation or work timelines (e.g., 24 or 26 (Est.)).
+You must look closely for previous company experience or professional internships.
+You must provide exactly 5 targeted screening technical questions.
+Respond ONLY using this direct template format:
+NAME: [Name]
+AGE: [Age value or Estimated age]
+MATCH_PERCENTAGE: [0-100 number]
+DECISION: [HIRE or REJECT]
+MATCHING_SKILLS: [Skills found in resume matching the JD]
+MISSING_SKILLS: [Required JD elements missing from the resume]
+EDUCATION: [Degrees found]
+QUESTIONS: 1. [Q1]\n2. [Q2]\n3. [Q3]\n4. [Q4]\n5. [Q5]"""
+
+        user_content = f"JOB:\n{job_description}\n\nRESUME:\n{resume_text}"
         
-        # STRIPPED: Removed all optional keyword parameters entirely to make it bulletproof
-        response = client.text_generation(prompt)
+        # UPDATED: Using chat_completion to conform to the required conversational structure
+        chat_completion = client.chat_completion(
+            messages=[
+                {"role": "system", "content": system_instructions},
+                {"role": "user", "content": user_content}
+            ],
+            max_tokens=450
+        )
+        
+        response = chat_completion.choices[0].message.content
         
         def extract_field(field_name, text_source, default_val=""):
             pattern = rf"{field_name}:\s*(.*?)(?=\n(?:NAME|AGE|MATCH_PERCENTAGE|DECISION|MATCHING_SKILLS|MISSING_SKILLS|EDUCATION|QUESTIONS):|$)"
@@ -111,6 +117,5 @@ def analyze_resume(resume_text, job_description):
         }
         
     except Exception as e:
-        # If there is STILL a timeout error showing on your app UI, it means app.py is the file that needs changing!
         fallback_results["matching_skills"] = f"❌ LIVE EXCEPTION: {str(e)}"
         return fallback_results
