@@ -106,8 +106,8 @@ st.markdown("""
     .applicant-box-row {
         background: rgba(22, 30, 49, 0.5);
         border-radius: 10px;
-        padding: 16px;
-        margin-bottom: 15px;
+        padding: 20px;
+        margin-bottom: 20px;
         transition: border 0.3s ease;
     }
     .box-pass { border: 1px solid rgba(0, 255, 204, 0.35); box-shadow: inset 0 0 10px rgba(0, 255, 204, 0.05); }
@@ -134,6 +134,15 @@ st.markdown("""
         font-size: 0.85rem;
         text-transform: uppercase;
     }
+    
+    /* Cloned Interview Area Layout Block */
+    .interview-box {
+        background: rgba(15, 23, 42, 0.6);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 6px;
+        padding: 12px;
+        margin-top: 15px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -141,7 +150,7 @@ st.markdown("""
 st.markdown("""
 <div class="top-header-container">
     <div style="font-weight: bold; font-size: 1.1rem; color: #ffffff;">📋 ADVANCED NEURAL ATS // PRODUCTION ENGINE</div>
-    <div style="color: #00ffcc; font-weight: bold; font-size: 0.9rem;">STatus: <span style="color: #00ffcc;">CLUSTER CONNECTED 🟢</span></div>
+    <div style="color: #00ffcc; font-weight: bold; font-size: 0.9rem;">STATUS: <span style="color: #00ffcc;">CLUSTER CONNECTED 🟢</span></div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -225,36 +234,45 @@ with col_metrics_display:
                     border_state_class = "box-pass" if is_hire else "box-reject"
                     badge_markup = f'<span class="status-badge-pass">HIRE ✅</span>' if is_hire else f'<span class="status-badge-reject">REJECT ❌</span>'
                     accent_col = "#00ffcc" if is_hire else "#ef4444"
+                    candidate_age = candidate.get("age", "N/A")
                     
-                    # Open Container Layout
+                    # Formatting questions with HTML line breaks to handle 5 distinct questions beautifully
+                    formatted_questions = candidate['questions'].replace("\n", "<br>")
+                    
+                    # Name and Age are printed globally above columns so they never glitch or go missing
                     st.markdown(f"""
-                    <div class="applicant-box-row {border_state_class}" style="margin-bottom: 5px;">
-                        <div style="width: 100%; display: flex; justify-content: space-between; align-items: flex-start;">
+                    <div class="applicant-box-row {border_state_class}">
+                        <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px;">
                             <div>
-                                <div style="font-size: 1.1rem; font-weight: bold; color: #ffffff; margin-bottom:6px;">👤 {candidate['name'].upper()}</div>
+                                <span style="font-size: 1.2rem; font-weight: bold; color: #ffffff; letter-spacing: 0.5px;">👤 {candidate['name'].upper()}</span>
+                                <span style="font-size: 0.85rem; color: #8b949e; font-family: monospace; background: rgba(255,255,255,0.06); padding: 3px 8px; border-radius: 4px; margin-left: 10px; border: 1px solid rgba(255,255,255,0.1);">AGE: {candidate_age}</span>
                             </div>
                             {badge_markup}
                         </div>
-                    </div>
                     """, unsafe_allow_html=True)
                     
-                    # Side-by-side elements inside the candidate framework block
-                    col_info, col_radar = st.columns([1.8, 1.2])
+                    # Split into Data vs Radar charts side-by-side inside the main row wrapper layout
+                    col_info, col_radar = st.columns([1.7, 1.3])
                     
                     with col_info:
                         st.markdown(f"""
-                        <div style="font-size: 0.88rem; color: #cbd5e1; line-height: 1.6; padding-left: 5px;">
+                        <div style="font-size: 0.88rem; color: #cbd5e1; line-height: 1.6;">
                             <b>MATCHN:</b> <span style="color: {accent_col}; font-weight:bold;">{candidate['match_percentage']}%</span><br>
                             <b>SKILLS MATCHED:</b> {candidate['matching_skills']}<br>
                             <b>MISSING:</b> {candidate['missing_skills']}<br>
-                            <b>EDUCATION:</b> {candidate['education']}<br><br>
-                            <span style="color: #8b949e; font-weight: bold;">📋 ACTIVE INTERVIEW QUESTION:</span><br>
-                            <span style="color: #ffffff; font-style: italic;">"{candidate['questions']}"</span>
+                            <b>EDUCATION:</b> {candidate['education']}
+                        </div>
+                        
+                        <div class="interview-box">
+                            <span style="color: #8b949e; font-weight: bold; font-size: 0.78rem; letter-spacing:0.5px;">🔻 VIEW INTERVIEW QUESTIONS (5)</span><br>
+                            <span style="color: #00ffcc; font-size:0.82rem; font-weight:bold;">Active Interview Evaluation Framework</span>
+                            <p style="color: #ffffff; font-size: 0.85rem; margin-top: 8px; background: rgba(0,0,0,0.25); padding: 10px; border-radius: 4px; border-left: 3px solid {accent_col}; line-height: 1.6;">
+                                {formatted_questions}
+                            </p>
                         </div>
                         """, unsafe_allow_html=True)
                         
                     with col_radar:
-                        # Fixed the duplicate key crash here by applying a clean loop index key string
                         radar_fig = go.Figure(data=go.Scatterpolar(
                           r=[candidate['match_percentage'], 85, 50, 75, 60],
                           theta=['Match Rate','Experience','Core Stack','Architecture','Pipeline Execution'],
@@ -270,9 +288,11 @@ with col_metrics_display:
                             showlegend=False, width=150, height=150, margin=dict(l=15, r=15, t=15, b=15),
                             paper_bgcolor='rgba(0,0,0,0)'
                         )
-                        st.plotly_chart(radar_fig, use_container_width=True, key=f"radar_chart_{idx}_{candidate['name'][:3]}")
+                        # Fixed duplicate key logic safely with structured loop indexes
+                        st.plotly_chart(radar_fig, use_container_width=True, key=f"radar_node_idx_{idx}_{candidate['name'][:3]}")
                     
-                    st.markdown("<hr style='border-color: rgba(255,255,255,0.05); margin: 15px 0;'>", unsafe_allow_html=True)
+                    # Securely close the row container HTML structure
+                    st.markdown("</div>", unsafe_allow_html=True)
             else:
                 st.error("Matrix processing failure. Ensure valid PDF content fields.")
     else:
