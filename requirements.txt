@@ -1,6 +1,0 @@
-streamlit
-huggingface_hub>=0.28.0
-plotly
-pandas
-openpyxl
-PyPDF2
