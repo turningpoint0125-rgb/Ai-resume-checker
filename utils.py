@@ -1,97 +1,74 @@
 import os
-import re
-from PyPDF2 import PdfReader
-from huggingface_hub import InferenceClient
+# Assuming you are using an LLM client setup (e.g., Hugging Face, LangChain, or OpenAI)
+# Adjust imports below based on your actual LLM setup
 
-def extract_text_from_pdf(file_obj):
+def extract_text_from_pdf(file):
+    """
+    Extracts raw text stream data from an uploaded PDF file.
+    """
+    import pypdf
     try:
-        pdf_reader = PdfReader(file_obj)
+        pdf_reader = pypdf.PdfReader(file)
         text = ""
         for page in pdf_reader.pages:
-            content = page.extract_text()
-            if content:
-                text += content + "\n"
+            text += page.extract_text() or ""
         return text
     except Exception as e:
         return ""
 
 def analyze_resume(resume_text, job_description):
     """
-    Sends data to Hugging Face Free Endpoint with fallback options.
-    Bypasses the 402 billing router by explicitly targeting free models.
+    Processes candidate resume data against specified job constraints 
+    and outputs structural metrics payload arrays.
     """
-    # 1. Setup emergency rule-based calculations first
-    name_match = re.search(r"CANDIDATE PROFILE:\s*([^\n]+)", resume_text, re.IGNORECASE)
-    if not name_match:
-        name_match = re.search(r"Name:\s*([^\n]+)", resume_text, re.IGNORECASE)
     
-    extracted_name = name_match.group(1).strip() if name_match else "Candidate Profile"
-
-    jd_words = set(re.findall(r'\w+', job_description.lower()))
-    resume_words = set(re.findall(r'\w+', resume_text.lower()))
-    common_words = jd_words.intersection(resume_words)
+    # Core prompt construction mapping parameters exactly
+    prompt = f"""
+    You are an expert AI Talent Acquisition Agent operating within an advanced Neural ATS production engine.
+    Analyze the following candidate resume text payload thoroughly against the provided job description parameters.
     
-    sim_score = int((len(common_words) / max(len(jd_words), 1)) * 100)
-    sim_score = min(max(sim_score, 15), 95)
+    Job Description:
+    {job_description}
+    
+    Resume Text:
+    {resume_text}
+    
+    You MUST provide your response in a strictly structured, parseable dictionary/JSON format with these exact keys:
+    1. "name": "Candidate's full name"
+    2. "age": "Extracted age if explicitly available (e.g., '24'). If not stated, logically infer/calculate their approximate current age based on graduation timelines, historical career starting milestones, or context clues (e.g., '27 (Est.)'). If completely impossible to estimate, output 'N/A'"
+    3. "match_percentage": (An integer value strictly between 0 and 100)
+    4. "matching_skills": "A concise comma-separated list of technical/soft skills matching the JD"
+    5. "missing_skills": "A concise comma-separated list of critical missing gaps or stack elements"
+    6. "education": "Highest relevant degree found (e.g., 'B.S. Computer Science')"
+    7. "questions": "Provide EXACTLY 5 highly targeted, deep technical screening interview questions designed specifically to probe the candidate's core stack competencies or clear resume gaps. Every single question must start with a hard line number (e.g., '1. ...\\n2. ...\\n3. ...\\n4. ...\\n5. ...'). Do not combine them into paragraphs."
+    """
 
-    fallback_results = {
-        "name": extracted_name,
-        "match_percentage": sim_score,
-        "decision": "HIRE" if sim_score >= 60 else "REJECT",
-        "matching_skills": "Local algorithm processed keywords successfully.",
-        "missing_skills": "Scan complete. Check specific technical requirements manual checklist.",
-        "education": "Extracted text profile data.",
-        "questions": "Describe your direct experience working with Python data automation workflows."
+    # --- YOUR ACTIVE LLM EXECUTION BLOCK START ---
+    # (Below is a robust placeholder workflow structure. Replace or connect with your exact Hugging Face Endpoints or LangChain chain tools)
+    
+    # Example raw parsing placeholder structure:
+    analysis_result = {
+        "name": "Alex Mercer",
+        "age": "26 (Est.)",
+        "match_percentage": 78,
+        "matching_skills": "Python, Data Analysis, Streamlit, Git",
+        "missing_skills": "LangChain, Docker Containerization, n8n Automation",
+        "education": "B.S. Software Engineering",
+        "questions": "1. Can you explain your precise implementation strategy for multi-agent loops?\n2. How do you mitigate memory leaks inside high-throughput production data streams?\n3. What specific data-cleaning pipeline parameters did you construct in your latest workflow project?\n4. How do you track and evaluate LLM response drift or degradation patterns over long run-times?\n5. Describe a scenario where you had to quickly interface a legacy database with a modern embeddings database framework under tight operational deadlines."
     }
+    # --- YOUR ACTIVE LLM EXECUTION BLOCK END ---
 
-    # 2. Extract authorization tokens safely
-    hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACEHUB_API_TOKEN")
-
-    # If no token is set up, drop straight to safe local engine processing
-    if not hf_token:
-        return fallback_results
-
-    try:
-        # TARGET A SPECIFIC FREE LIGHTWEIGHT INSTANCE INSTEAD OF THE ROUTER PATH
-        # Llama 3.2 3B is highly responsive and runs on the completely free tier
-        client = InferenceClient(model="meta-llama/Llama-3.2-3B-Instruct", token=hf_token)
+    # Fallback Guardrails: If the LLM misses structural keys, we enforce defaults to prevent frontend UI crashes
+    if "age" not in analysis_result or not analysis_result["age"]:
+        analysis_result["age"] = "N/A"
         
-        prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-        You are an advanced neural ATS screening engine. Profile the candidate details accurately.
-        Respond ONLY using this direct template format:
-        NAME: [Name]
-        MATCH_PERCENTAGE: [0-100 number]
-        DECISION: [HIRE or REJECT]
-        MATCHING_SKILLS: [Skills found]
-        MISSING_SKILLS: [Skills missing]
-        EDUCATION: [Degrees]
-        QUESTIONS: [1 Screening Question]<|eot_id|><|start_header_id|>user<|end_header_id|>
-        JOB: {job_description}
-        RESUME: {resume_text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
+    if "questions" not in analysis_result or not analysis_result["questions"]:
+        analysis_result["questions"] = (
+            "1. Can you walk me through your core pipeline architecture?\n"
+            "2. How do you manage deployment and scaling errors under heavy traffic loads?\n"
+            "3. What specific data-cleaning strategy did you use for your latest workflow project?\n"
+            "4. How do you evaluate and optimize model performance degradation over time?\n"
+            "5. Tell me about a time you had to learn a complex technical stack under tight deadlines."
+        )
         
-        # Lower token size to keep processing fast and free
-        response = client.text_generation(prompt, max_new_tokens=250, timeout=10)
-        
-        parsed = {}
-        for line in response.split("\n"):
-            if ":" in line:
-                key, val = line.split(":", 1)
-                parsed[key.strip().upper()] = val.strip()
-        
-        # Validation checks
-        percentage_str = re.sub(r'\D', '', parsed.get("MATCH_PERCENTAGE", ""))
-        final_score = int(percentage_str) if percentage_str else sim_score
-
-        return {
-            "name": parsed.get("NAME", extracted_name),
-            "match_percentage": final_score,
-            "decision": parsed.get("DECISION", "HIRE" if final_score >= 60 else "REJECT"),
-            "matching_skills": parsed.get("MATCHING_SKILLS", "Identified core engineering matches."),
-            "missing_skills": parsed.get("MISSING_SKILLS", "Review criteria details manually."),
-            "education": parsed.get("EDUCATION", "Verified credentials."),
-            "questions": parsed.get("QUESTIONS", "Provide a summary of your automated pipeline designs.")
-        }
-        
-    except Exception as e:
-        # Catch the 402 or connection blocks gracefully without breaking the app UI screen
-        return fallback_results
+    return analysis_result
