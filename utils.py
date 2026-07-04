@@ -1,5 +1,6 @@
 import os
 import re
+import streamlit as st
 from PyPDF2 import PdfReader
 from huggingface_hub import InferenceClient
 
@@ -18,7 +19,7 @@ def extract_text_from_pdf(file_obj):
 def analyze_resume(resume_text, job_description):
     """
     Sends data to Hugging Face Free Endpoint with fallback options.
-    Bypasses the 402 billing router by explicitly targeting free models.
+    Checks for the HUGGINGFACEHUB_API_TOKEN secret configuration directly.
     """
     # 1. Setup emergency rule-based calculations first
     name_match = re.search(r"CANDIDATE PROFILE:\s*([^\n]+)", resume_text, re.IGNORECASE)
@@ -34,7 +35,6 @@ def analyze_resume(resume_text, job_description):
     sim_score = int((len(common_words) / max(len(jd_words), 1)) * 100)
     sim_score = min(max(sim_score, 15), 95)
 
-    # Updated fallback dictionary to include age and 5 default questions
     fallback_results = {
         "name": extracted_name,
         "age": "N/A",
@@ -46,83 +46,72 @@ def analyze_resume(resume_text, job_description):
         "questions": "1. Describe your direct experience working with Python data automation workflows.\n2. How do you maintain code quality inside collaborative development environments?\n3. What testing methodologies do you employ for analytical tools?\n4. Walk through a recent project architecture you successfully deployed.\n5. How do you handle unstructured data inputs within your processing workflows?"
     }
 
-    # 2. Extract authorization tokens safely
-    hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACEHUB_API_TOKEN")
+    # 2. PRIORITY CHECK: Fallback check targeting your specific naming format first
+    hf_token = (
+        st.secrets.get("HUGGINGFACEHUB_API_TOKEN") or 
+        st.secrets.get("HF_TOKEN") or 
+        os.environ.get("HUGGINGFACEHUB_API_TOKEN") or 
+        os.environ.get("HF_TOKEN")
+    )
 
-    # If no token is set up, drop straight to safe local engine processing
+    # If it still isn't found, drop gracefully to safe local fallback processing
     if not hf_token:
         return fallback_results
 
     try:
-        # TARGET A SPECIFIC FREE LIGHTWEIGHT INSTANCE INSTEAD OF THE ROUTER PATH
+        # Connect explicitly to the free lightweight instruction instance using your token
         client = InferenceClient(model="meta-llama/Llama-3.2-3B-Instruct", token=hf_token)
         
-        # Updated prompt template to explicitly demand AGE and EXACTLY 5 newline-separated screening questions
         prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-        You are an advanced neural ATS screening engine. Profile the candidate details accurately.
-        You must extract or logically estimate the candidate's age based on their educational/professional timeline (e.g. 24 or 26 (Est.)).
-        You must provide exactly 5 deep screening technical questions starting with hard numbers.
+        You are an advanced neural ATS screening engine. Profile the candidate details accurately based on the provided resume text.
+        You must extract the candidate's age or logically calculate/estimate it based on graduation or work timelines (e.g., 24 or 26 (Est.)).
+        You must look closely for previous company experience or professional internships.
+        You must provide exactly 5 targeted screening technical questions.
         Respond ONLY using this direct template format:
         NAME: [Name]
         AGE: [Age value or Estimated age]
         MATCH_PERCENTAGE: [0-100 number]
         DECISION: [HIRE or REJECT]
-        MATCHING_SKILLS: [Skills found]
-        MISSING_SKILLS: [Skills missing]
-        EDUCATION: [Degrees]
+        MATCHING_SKILLS: [Skills found in resume matching the JD]
+        MISSING_SKILLS: [Required JD elements missing from the resume]
+        EDUCATION: [Degrees found]
         QUESTIONS: 1. [Q1]\n2. [Q2]\n3. [Q3]\n4. [Q4]\n5. [Q5]<|eot_id|><|start_header_id|>user<|end_header_id|>
         JOB: {job_description}
         RESUME: {resume_text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
         
-        # Increased max_new_tokens to 450 to comfortably fit all 5 questions without truncation
-        response = client.text_generation(prompt, max_new_tokens=450, timeout=12)
+        response = client.text_generation(prompt, max_new_tokens=450, timeout=15)
         
-        parsed = {}
-        questions_list = []
-        capture_questions = False
+        # Robust Regex-based Parsing to handle variable outputs safely
+        def extract_field(field_name, text_source, default_val=""):
+            pattern = rf"{field_name}:\s*(.*?)(?=\n(?:NAME|AGE|MATCH_PERCENTAGE|DECISION|MATCHING_SKILLS|MISSING_SKILLS|EDUCATION|QUESTIONS):|$)"
+            match = re.search(pattern, text_source, re.DOTALL | re.IGNORECASE)
+            return match.group(1).strip() if match else default_val
 
-        # Split and cleanly separate fields vs multi-line question blocks
-        for line in response.split("\n"):
-            line_str = line.strip()
-            if not line_str:
-                continue
-                
-            # If we hit the questions segment, capture it and subsequent numbered rows
-            if line_str.upper().startswith("QUESTIONS:"):
-                capture_questions = True
-                val = line_str.split(":", 1)[1].strip()
-                if val:
-                    questions_list.append(val)
-                continue
-            
-            if capture_questions:
-                # Keep accumulating lines that look like part of the 5 questions block
-                if re.match(r'^\d+\.', line_str) or line_str:
-                    questions_list.append(line_str)
-                continue
-
-            if ":" in line_str:
-                key, val = line_str.split(":", 1)
-                parsed[key.strip().upper()] = val.strip()
+        parsed_name = extract_field("NAME", response, extracted_name)
+        parsed_age = extract_field("AGE", response, "N/A")
+        parsed_score_str = extract_field("MATCH_PERCENTAGE", response, "")
+        parsed_decision = extract_field("DECISION", response, "HIRE" if sim_score >= 60 else "REJECT")
+        parsed_matching = extract_field("MATCHING_SKILLS", response, "Identified core matches.")
+        parsed_missing = extract_field("MISSING_SKILLS", response, "Review criteria details manually.")
+        parsed_edu = extract_field("EDUCATION", response, "Verified credentials.")
         
-        # Validation checks
-        percentage_str = re.sub(r'\D', '', parsed.get("MATCH_PERCENTAGE", ""))
+        # Capture the full block for technical candidate screening questions
+        q_match = re.search(r"QUESTIONS:\s*(.*)", response, re.DOTALL | re.IGNORECASE)
+        parsed_questions = q_match.group(1).strip() if q_match else fallback_results["questions"]
+
+        percentage_str = re.sub(r'\D', '', parsed_score_str)
         final_score = int(percentage_str) if percentage_str else sim_score
         
-        # Join the multi-line captured questions block back with true line-breaks
-        final_questions = "\n".join(questions_list) if questions_list else fallback_results["questions"]
-
         return {
-            "name": parsed.get("NAME", extracted_name),
-            "age": parsed.get("AGE", "N/A"),
+            "name": parsed_name,
+            "age": parsed_age if parsed_age else "N/A",
             "match_percentage": final_score,
-            "decision": parsed.get("DECISION", "HIRE" if final_score >= 60 else "REJECT"),
-            "matching_skills": parsed.get("MATCHING_SKILLS", "Identified core engineering matches."),
-            "missing_skills": parsed.get("MISSING_SKILLS", "Review criteria details manually."),
-            "education": parsed.get("EDUCATION", "Verified credentials."),
-            "questions": final_questions
+            "decision": parsed_decision,
+            "matching_skills": parsed_matching,
+            "missing_skills": parsed_missing,
+            "education": parsed_edu,
+            "questions": parsed_questions
         }
         
     except Exception as e:
-        # Catch connection block dropouts gracefully without crashing the visual app screen
         return fallback_results
