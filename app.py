@@ -108,9 +108,6 @@ st.markdown("""
         border-radius: 10px;
         padding: 16px;
         margin-bottom: 15px;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
         transition: border 0.3s ease;
     }
     .box-pass { border: 1px solid rgba(0, 255, 204, 0.35); box-shadow: inset 0 0 10px rgba(0, 255, 204, 0.05); }
@@ -153,13 +150,11 @@ col_sidebar_and_input, col_metrics_display = st.columns([1.1, 1.3])
 
 # ==================== LEFT COLUMN CONFIGURATION ====================
 with col_sidebar_and_input:
-    # 1. Slider Placement matching floating UI element on the bottom left
     st.markdown('<div class="floating-sidebar-panel">', unsafe_allow_html=True)
     st.markdown("<span style='color: #8b949e; font-size: 0.8rem; font-weight:bold;'>SIDEBAR (SECURITY & CONTROL)</span>", unsafe_allow_html=True)
     match_threshold = st.slider("⚡ MATCH THRESHOLD CONTROL", min_value=0, max_value=100, value=60, step=5)
     st.markdown('</div><br>', unsafe_allow_html=True)
 
-    # 2. Left Context Main Grid panel[cite: 7]
     st.markdown('<div class="glass-panel-container">', unsafe_allow_html=True)
     st.markdown('<div class="column-header">📋 CONTEXT & CONCURRENT INGESTION</div>', unsafe_allow_html=True)
     
@@ -167,7 +162,6 @@ with col_sidebar_and_input:
     st.markdown("<span style='color: #00ffcc; font-weight: bold; font-size:0.85rem;'>HUGGINGFACE NODE STATUS: ✅ CONNECTED</span>", unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
     
-    # Text Inputs Framework
     job_description = st.text_area(
         "JOB PARAMETERS (JD & SKILLS)", 
         height=150, 
@@ -225,51 +219,60 @@ with col_metrics_display:
                 
                 st.markdown("<div style='margin: 20px 0 10px 0; font-size:0.9rem; color:#8b949e; font-weight:bold;'>🔍 FILTER PROFILES BY NAME/KEYWORDS</div>", unsafe_allow_html=True)
                 
-                # Render Candidate Cloned Component row layout block pairs[cite: 7]
-                for candidate in all_results:
+                # Render Candidate Cloned Component row layout blocks completely open
+                for idx, candidate in enumerate(all_results):
                     is_hire = candidate["decision"] == "HIRE"
                     border_state_class = "box-pass" if is_hire else "box-reject"
                     badge_markup = f'<span class="status-badge-pass">HIRE ✅</span>' if is_hire else f'<span class="status-badge-reject">REJECT ❌</span>'
                     accent_col = "#00ffcc" if is_hire else "#ef4444"
                     
-                    # Split each candidate entry layout block into clear left text / right charts side-by-side[cite: 7]
+                    # Open Container Layout
                     st.markdown(f"""
-                    <div class="applicant-box-row {border_state_class}">
-                        <div style="width: 60%;">
-                            <div style="font-size: 1.1rem; font-weight: bold; color: #ffffff; margin-bottom:6px;">👤 {candidate['name'].upper()}</div>
-                            <div style="font-size: 0.88rem; color: #cbd5e1; line-height: 1.5;">
-                                <b>MATCH:</b> <span style="color: {accent_col}; font-weight:bold;">{candidate['match_percentage']}%</span><br>
-                                <b>SKILLS MATCHED:</b> {candidate['matching_skills']}<br>
-                                <b>MISSING:</b> {candidate['missing_skills']}<br>
-                                <b>EDUCATION:</b> {candidate['education']}
+                    <div class="applicant-box-row {border_state_class}" style="margin-bottom: 5px;">
+                        <div style="width: 100%; display: flex; justify-content: space-between; align-items: flex-start;">
+                            <div>
+                                <div style="font-size: 1.1rem; font-weight: bold; color: #ffffff; margin-bottom:6px;">👤 {candidate['name'].upper()}</div>
                             </div>
-                        </div>
-                        <div style="width: 35%; text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 10px;">
                             {badge_markup}
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
                     
-                    # Mini Radar Chart calculation layout simulation loop injected per card block[cite: 7]
-                    with st.expander(f"⚙️ Expandable Active Evaluation Metrics & Questions"):
-                        col_card_text, col_card_radar = st.columns([2, 1.2])
-                        with col_card_text:
-                            st.write(f"**Targeted Interview Screening Prompts:**")
-                            st.info(candidate['questions'])
-                        with col_card_radar:
-                            # Render real-time mathematical radar layouts for technical assessment verification
-                            radar_fig = go.Figure(data=go.Scatterpolar(
-                              r=[candidate['match_percentage'], 90, 40, 70, 50],
-                              theta=['Match Rate','Experience','Core Stack','Architecture','Pipeline Execution'],
-                              fill='toself',
-                              line_color=accent_col
-                            ))
-                            radar_fig.update_layout(
-                                polar=dict(radialaxis=dict(visible=False), bgcolor='rgba(0,0,0,0)'),
-                                showlegend=False, width=160, height=160, margin=dict(l=20, r=20, t=20, b=20),
-                                paper_bgcolor='rgba(0,0,0,0)'
-                            )
-                            st.plotly_chart(radar_fig, use_container_width=True)
+                    # Side-by-side elements inside the candidate framework block
+                    col_info, col_radar = st.columns([1.8, 1.2])
+                    
+                    with col_info:
+                        st.markdown(f"""
+                        <div style="font-size: 0.88rem; color: #cbd5e1; line-height: 1.6; padding-left: 5px;">
+                            <b>MATCHN:</b> <span style="color: {accent_col}; font-weight:bold;">{candidate['match_percentage']}%</span><br>
+                            <b>SKILLS MATCHED:</b> {candidate['matching_skills']}<br>
+                            <b>MISSING:</b> {candidate['missing_skills']}<br>
+                            <b>EDUCATION:</b> {candidate['education']}<br><br>
+                            <span style="color: #8b949e; font-weight: bold;">📋 ACTIVE INTERVIEW QUESTION:</span><br>
+                            <span style="color: #ffffff; font-style: italic;">"{candidate['questions']}"</span>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                    with col_radar:
+                        # Fixed the duplicate key crash here by applying a clean loop index key string
+                        radar_fig = go.Figure(data=go.Scatterpolar(
+                          r=[candidate['match_percentage'], 85, 50, 75, 60],
+                          theta=['Match Rate','Experience','Core Stack','Architecture','Pipeline Execution'],
+                          fill='toself',
+                          line_color=accent_col
+                        ))
+                        radar_fig.update_layout(
+                            polar=dict(
+                                radialaxis=dict(visible=False), 
+                                bgcolor='rgba(0,0,0,0)',
+                                angularaxis=dict(gridcolor='rgba(255,255,255,0.05)', color='#cbd5e1')
+                            ),
+                            showlegend=False, width=150, height=150, margin=dict(l=15, r=15, t=15, b=15),
+                            paper_bgcolor='rgba(0,0,0,0)'
+                        )
+                        st.plotly_chart(radar_fig, use_container_width=True, key=f"radar_chart_{idx}_{candidate['name'][:3]}")
+                    
+                    st.markdown("<hr style='border-color: rgba(255,255,255,0.05); margin: 15px 0;'>", unsafe_allow_html=True)
             else:
                 st.error("Matrix processing failure. Ensure valid PDF content fields.")
     else:
