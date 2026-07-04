@@ -237,7 +237,7 @@ with col_input_right:
                 showlegend=True,
                 hovermode='x unified'
             )
-            st.plotly_chart(fig_bar, use_container_width=True)
+            st.plotly_chart(fig_bar, use_container_width=True, key="comparison_bar")
             
             # ========== INDIVIDUAL CANDIDATE CARDS ==========
             for result in results_list:
@@ -306,7 +306,7 @@ with col_input_right:
                             margin=dict(l=10, r=10, t=10, b=10),
                             showlegend=True
                         )
-                        st.plotly_chart(fig_pie, use_container_width=True)
+                        st.plotly_chart(fig_pie, use_container_width=True, key=f"pie_{result['name'].replace(' ', '_')}")
                     
                     st.markdown("---")
                     
@@ -331,5 +331,5 @@ with col_input_right:
             plot_bgcolor='#161b22', paper_bgcolor='#161b22', font_color='#c9d1d9',
             height=300
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key="default_chart")
         st.info("Waiting for configuration payload... Populate parameters and execute scanner matrix pipelines.")
