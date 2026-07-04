@@ -1,6 +1,6 @@
 streamlit
 huggingface_hub>=0.28.0
-PyPDF2
 plotly
 pandas
 openpyxl
+PyPDF2
