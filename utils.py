@@ -87,7 +87,7 @@ QUESTIONS: 1. [Q1]\n2. [Q2]\n3. [Q3]\n4. [Q4]\n5. [Q5]"""
 
         user_content = f"JOB:\n{job_description}\n\nRESUME:\n{resume_text}"
         
-        # ADDED: Retry loop system specifically to handle rate limits or API glitches on the last file
+        # Retry loop block for network reliability
         raw_response = None
         for attempt in range(3):
             try:
@@ -102,16 +102,16 @@ QUESTIONS: 1. [Q1]\n2. [Q2]\n3. [Q3]\n4. [Q4]\n5. [Q5]"""
                 if raw_response:
                     break
             except Exception as api_err:
-                if attempt == 2: # Out of retries, raise error to drop to fallback
+                if attempt == 2:
                     raise api_err
-                time.sleep(1) # Wait 1 second before retrying a dropped connection
+                time.sleep(1)
         
         if not raw_response:
             return fallback_results
 
-        # Exactly your previous regex lookup patterns completely untouched
+        # Lookahead helper to safely extract fields without line bleeding
         def parse_tag(field_tag, text_source, default=""):
-            pattern = rf"{field_tag}:\s*(.*?)(?=\s*(?:\*\*|\b)(?:NAME|AGE|MATCH_PERCENTAGE|DECISION|MATCHING_SKILLS|MISSING_SKILLS|EDUCATION|QUESTIONS):|$)"
+            pattern = rf"{field_tag}:\s*(.*?)(?=\s*(?:\*\*|\b)(?:NAME|AGE|MATCH_PERCENTAGE|DECISION|MATCHING_SKILLS|MISSING_SKILLS|MISSING|EDUCATION|QUESTIONS):|$)"
             match = re.search(pattern, text_source, re.DOTALL | re.IGNORECASE)
             if match:
                 return sanitize_output_text(match.group(1))
@@ -130,7 +130,12 @@ QUESTIONS: 1. [Q1]\n2. [Q2]\n3. [Q3]\n4. [Q4]\n5. [Q5]"""
 
         parsed_decision = parse_tag("DECISION", raw_response, "HIRE" if final_score >= 60 else "REJECT").upper()
         parsed_matching = parse_tag("MATCHING_SKILLS", raw_response, "Identified core matches.")
-        parsed_missing = parse_tag("MISSING_SKILLS", raw_response, "None")
+        
+        # FIX: Try matching "MISSING_SKILLS" first; if the model outputs "MISSING:", fall back to extracting that instead
+        parsed_missing = parse_tag("MISSING_SKILLS", raw_response, "")
+        if not parsed_missing:
+            parsed_missing = parse_tag("MISSING", raw_response, "None")
+            
         parsed_edu = parse_tag("EDUCATION", raw_response, "Verified credentials.")
         
         q_match = re.search(r"QUESTIONS:\s*(.*)", raw_response, re.DOTALL | re.IGNORECASE)
@@ -142,7 +147,7 @@ QUESTIONS: 1. [Q1]\n2. [Q2]\n3. [Q3]\n4. [Q4]\n5. [Q5]"""
             "match_percentage": final_score,
             "decision": "HIRE" if "HIRE" in parsed_decision else "REJECT",
             "matching_skills": parsed_matching,
-            "missing_skills": parsed_missing,
+            "missing_skills": parsed_missing if parsed_missing else "None",
             "education": parsed_edu,
             "questions": parsed_questions
         }
