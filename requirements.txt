@@ -1,8 +1,0 @@
-streamlit
-langchain
-langchain-community
-huggingface_hub
-PyPDF2
-plotly
-pandas
-openpyxl
