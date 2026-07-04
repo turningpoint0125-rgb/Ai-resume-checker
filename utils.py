@@ -56,13 +56,13 @@ def analyze_resume(resume_text, job_description):
         return fallback_results
 
     try:
-        # Connect explicitly to the free conversational-supported instance
-        client = InferenceClient(model="meta-llama/Llama-3.2-3B-Instruct", token=hf_token)
+        # SWITCHED: Targeting Qwen2.5-Coder-7B-Instruct which is fully up and stable on the serverless tier
+        client = InferenceClient(model="Qwen/Qwen2.5-Coder-7B-Instruct", token=hf_token)
         
         system_instructions = """You are an advanced neural ATS screening engine. Profile the candidate details accurately based on the provided resume text.
+You must look closely for previous company experience, professional roles, or internships.
 You must extract the candidate's age or logically calculate/estimate it based on graduation or work timelines (e.g., 24 or 26 (Est.)).
-You must look closely for previous company experience or professional internships.
-You must provide exactly 5 targeted screening technical questions.
+You must provide exactly 5 targeted screening technical questions starting with numbers.
 Respond ONLY using this direct template format:
 NAME: [Name]
 AGE: [Age value or Estimated age]
@@ -75,13 +75,12 @@ QUESTIONS: 1. [Q1]\n2. [Q2]\n3. [Q3]\n4. [Q4]\n5. [Q5]"""
 
         user_content = f"JOB:\n{job_description}\n\nRESUME:\n{resume_text}"
         
-        # FIX: Switched from text_generation to chat_completion to accommodate the free provider task change
         chat_completion = client.chat_completion(
             messages=[
                 {"role": "system", "content": system_instructions},
                 {"role": "user", "content": user_content}
             ],
-            max_tokens=450
+            max_tokens=500
         )
         
         response = chat_completion.choices[0].message.content
