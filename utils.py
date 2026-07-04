@@ -17,7 +17,7 @@ def extract_text_from_pdf(file_obj):
         return ""
 
 def analyze_resume(resume_text, job_description):
-    # 1. Setup emergency rule-based calculations first
+    # 1. Rule-based emergency backups (Your original fallback values)
     name_match = re.search(r"CANDIDATE PROFILE:\s*([^\n]+)", resume_text, re.IGNORECASE)
     if not name_match:
         name_match = re.search(r"Name:\s*([^\n]+)", resume_text, re.IGNORECASE)
@@ -56,13 +56,10 @@ def analyze_resume(resume_text, job_description):
         return fallback_results
 
     try:
-        # SWITCHED: Targeting Qwen2.5-Coder-7B-Instruct which is fully up and stable on the serverless tier
+        # Keeping the stable conversational model layout
         client = InferenceClient(model="Qwen/Qwen2.5-Coder-7B-Instruct", token=hf_token)
         
         system_instructions = """You are an advanced neural ATS screening engine. Profile the candidate details accurately based on the provided resume text.
-You must look closely for previous company experience, professional roles, or internships.
-You must extract the candidate's age or logically calculate/estimate it based on graduation or work timelines (e.g., 24 or 26 (Est.)).
-You must provide exactly 5 targeted screening technical questions starting with numbers.
 Respond ONLY using this direct template format:
 NAME: [Name]
 AGE: [Age value or Estimated age]
@@ -80,11 +77,12 @@ QUESTIONS: 1. [Q1]\n2. [Q2]\n3. [Q3]\n4. [Q4]\n5. [Q5]"""
                 {"role": "system", "content": system_instructions},
                 {"role": "user", "content": user_content}
             ],
-            max_tokens=500
+            max_tokens=450
         )
         
         response = chat_completion.choices[0].message.content
         
+        # 2. FIXED: Robust field extraction to prevent bleeding text into other metrics
         def extract_field(field_name, text_source, default_val=""):
             pattern = rf"{field_name}:\s*(.*?)(?=\n(?:NAME|AGE|MATCH_PERCENTAGE|DECISION|MATCHING_SKILLS|MISSING_SKILLS|EDUCATION|QUESTIONS):|$)"
             match = re.search(pattern, text_source, re.DOTALL | re.IGNORECASE)
@@ -92,17 +90,19 @@ QUESTIONS: 1. [Q1]\n2. [Q2]\n3. [Q3]\n4. [Q4]\n5. [Q5]"""
 
         parsed_name = extract_field("NAME", response, extracted_name)
         parsed_age = extract_field("AGE", response, "N/A")
+        
+        # Strip everything except the numbers out of the percentage string
         parsed_score_str = extract_field("MATCH_PERCENTAGE", response, "")
-        parsed_decision = extract_field("DECISION", response, "HIRE" if sim_score >= 60 else "REJECT")
+        percentage_str = re.sub(r'\D', '', parsed_score_str)
+        final_score = int(percentage_str[:2]) if percentage_str else sim_score # Forces it to stay a valid 2 digit percentage
+
+        parsed_decision = extract_field("DECISION", response, "HIRE" if final_score >= 60 else "REJECT")
         parsed_matching = extract_field("MATCHING_SKILLS", response, "Identified core matches.")
         parsed_missing = extract_field("MISSING_SKILLS", response, "Review criteria details manually.")
         parsed_edu = extract_field("EDUCATION", response, "Verified credentials.")
         
         q_match = re.search(r"QUESTIONS:\s*(.*)", response, re.DOTALL | re.IGNORECASE)
         parsed_questions = q_match.group(1).strip() if q_match else fallback_results["questions"]
-
-        percentage_str = re.sub(r'\D', '', parsed_score_str)
-        final_score = int(percentage_str) if percentage_str else sim_score
         
         return {
             "name": parsed_name,
