@@ -5,160 +5,181 @@ import streamlit as st
 from PyPDF2 import PdfReader
 from huggingface_hub import InferenceClient
 
-def extract_text_from_pdf(file_obj):
-    """Extracts raw text content from uploaded PDF files safely."""
+# =========================================================
+# PDF AGENT
+# =========================================================
+def extract_text_from_pdf(file_obj) -> str:
     try:
-        pdf_reader = PdfReader(file_obj)
+        reader = PdfReader(file_obj)
         text = ""
-        for page in pdf_reader.pages:
-            content = page.extract_text()
-            if content:
-                text += content + "\n"
-        return text
-    except Exception as e:
+        for page in reader.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+        return text.strip()
+    except Exception:
         return ""
 
-def sanitize_output_text(text):
-    """Cleans up stray markdown brackets and characters."""
+
+# =========================================================
+# TEXT SANITIZER AGENT
+# =========================================================
+def clean_text(text: str) -> str:
     if not text:
         return ""
-    cleaned = re.sub(r"[\{\}\[\]'\"]", "", text)
-    cleaned = re.sub(r",\s*,", ",", cleaned)
-    return cleaned.strip("*").strip()
+    text = re.sub(r"[\{\}\[\]\"']", "", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
-def analyze_resume(resume_text, job_description):
-    """Scans candidate resume data with robust keyword boundaries to prevent leaks."""
-    # Emergency local backups
-    name_match = re.search(r"CANDIDATE PROFILE:\s*([^\n]+)", resume_text, re.IGNORECASE)
-    if not name_match:
-        name_match = re.search(r"Name:\s*([^\n]+)", resume_text, re.IGNORECASE)
-    
-    extracted_name = name_match.group(1).strip() if name_match else "Candidate Profile"
 
-    jd_words = set(re.findall(r'\w+', job_description.lower()))
-    resume_words = set(re.findall(r'\w+', resume_text.lower()))
-    common_words = jd_words.intersection(resume_words)
-    
-    sim_score = int((len(common_words) / max(len(jd_words), 1)) * 100)
-    sim_score = min(max(sim_score, 15), 95)
+# =========================================================
+# NAME EXTRACTION AGENT (LOCAL SAFE)
+# =========================================================
+def extract_candidate_name(resume_text: str) -> str:
+    patterns = [
+        r"Name:\s*([A-Za-z\s]+)",
+        r"CANDIDATE PROFILE:\s*([A-Za-z\s]+)"
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, resume_text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+    return "Candidate"
 
-    hf_token = None
-    if hasattr(st, "secrets"):
-        if "HUGGINGFACEHUB_API_TOKEN" in st.secrets:
-            hf_token = st.secrets["HUGGINGFACEHUB_API_TOKEN"]
-        elif "HF_TOKEN" in st.secrets:
-            hf_token = st.secrets["HF_TOKEN"]
-            
+
+# =========================================================
+# SCORING AGENT (DETERMINISTIC)
+# =========================================================
+def keyword_match_score(resume_text: str, job_description: str) -> int:
+    jd_words = set(re.findall(r"\w+", job_description.lower()))
+    resume_words = set(re.findall(r"\w+", resume_text.lower()))
+
+    if not jd_words:
+        return 15
+
+    score = int((len(jd_words & resume_words) / len(jd_words)) * 100)
+    return max(15, min(score, 95))
+
+
+# =========================================================
+# LLM EXTRACTION AGENT
+# =========================================================
+def llm_extract(resume_text: str, job_description: str, token: str) -> str:
+    client = InferenceClient(
+        model="Qwen/Qwen2.5-Coder-7B-Instruct",
+        token=token
+    )
+
+    system_prompt = """
+You are an ATS extraction engine.
+
+RULES:
+- DO NOT guess age
+- If age not written → "Not Disclosed"
+- Output plain text only
+- Follow format strictly
+
+FORMAT:
+NAME:
+AGE:
+MATCHING_SKILLS:
+MISSING_SKILLS:
+EDUCATION:
+QUESTIONS:
+1.
+2.
+3.
+4.
+5.
+"""
+
+    response = client.chat_completion(
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"JOB:\n{job_description}\n\nRESUME:\n{resume_text}"}
+        ],
+        max_tokens=500,
+        temperature=0
+    )
+
+    return response.choices[0].message.content
+
+
+# =========================================================
+# PARSING AGENT
+# =========================================================
+def parse_field(tag: str, text: str, default=""):
+    pattern = rf"{tag}:\s*(.*?)(?=\n[A-Z_]+:|\Z)"
+    match = re.search(pattern, text, re.DOTALL)
+    return clean_text(match.group(1)) if match else default
+
+
+# =========================================================
+# DECISION AGENT (FINAL AUTHORITY)
+# =========================================================
+def decision_agent(score: int) -> str:
+    return "HIRE" if score >= 60 else "REJECT"
+
+
+# =========================================================
+# MAIN ORCHESTRATOR (MULTI-AGENT CONTROLLER)
+# =========================================================
+@st.cache_data(show_spinner=False)
+def analyze_resume(resume_text: str, job_description: str) -> dict:
+
+    # ---- LOCAL AGENTS ----
+    name = extract_candidate_name(resume_text)
+    score = keyword_match_score(resume_text, job_description)
+    decision = decision_agent(score)
+
+    # ---- TOKEN ----
+    hf_token = (
+        st.secrets.get("HF_TOKEN")
+        if hasattr(st, "secrets")
+        else os.environ.get("HF_TOKEN")
+    )
+
+    # ---- FALLBACK ----
     if not hf_token:
-        hf_token = os.environ.get("HUGGINGFACEHUB_API_TOKEN") or os.environ.get("HF_TOKEN")
+        return {
+            "name": name,
+            "age": "Not Disclosed",
+            "match_percentage": score,
+            "decision": decision,
+            "matching_skills": "Keyword based extraction",
+            "missing_skills": "Manual review required",
+            "education": "Not detected",
+            "questions": default_questions()
+        }
 
-    fallback_results = {
-        "name": extracted_name,
-        "age": "N/A",
-        "match_percentage": sim_score,
-        "decision": "HIRE" if sim_score >= 60 else "REJECT",
-        "matching_skills": "Local keyword scanning processed successfully.",
-        "missing_skills": "Review system baseline constraints manually.",
-        "education": "Extracted text profile data.",
-        "questions": "1. Describe your direct experience working with Python data automation workflows.\n2. How do you maintain code quality inside collaborative development environments?\n3. What testing methodologies do you employ for analytical tools?\n4. Walk through a recent project architecture you successfully deployed.\n5. How do you handle unstructured data inputs within your processing workflows?"
+    # ---- LLM AGENT ----
+    raw = llm_extract(resume_text, job_description, hf_token)
+
+    age = parse_field("AGE", raw, "Not Disclosed")
+    if not re.search(r"\d", age):
+        age = "Not Disclosed"
+
+    skills = parse_field("MATCHING_SKILLS", raw, "")
+    skills = ", ".join(sorted(set(s.strip().lower() for s in skills.split(",") if s)))
+
+    return {
+        "name": parse_field("NAME", raw, name),
+        "age": age,
+        "match_percentage": score,
+        "decision": decision,
+        "matching_skills": skills or "None",
+        "missing_skills": parse_field("MISSING_SKILLS", raw, "None"),
+        "education": parse_field("EDUCATION", raw, "Not Provided"),
+        "questions": parse_field("QUESTIONS", raw, default_questions())
     }
 
-    if not hf_token:
-        return fallback_results
 
-    try:
-        client = InferenceClient(model="Qwen/Qwen2.5-Coder-7B-Instruct", token=hf_token)
-        
-        system_instructions = """You are an advanced neural ATS screening engine. Profile the candidate details accurately based on the provided resume text.
-        
-CRITICAL FORMAT RULES:
-1. For the AGE field, output ONLY the number or a short estimate (e.g., "31 (Est.)"). Max 3 words.
-2. Ensure every single block label starts on a brand new line.
-3. For the QUESTIONS field, output standard plain text only. Do NOT output HTML tags, markdown blocks, or code divs.
-
-Respond ONLY using this direct template format:
-NAME: [Candidate Name]
-AGE: [Short value or short estimation]
-MATCH_PERCENTAGE: [0-100 number only]
-DECISION: [HIRE or REJECT]
-MATCHING_SKILLS: [Matched technical skills]
-MISSING_SKILLS: [Missing skills or None]
-EDUCATION: [Degrees and schools found]
-QUESTIONS: 1. [Q1]\n2. [Q2]\n3. [Q3]\n4. [Q4]\n5. [Q5]"""
-
-        user_content = f"JOB:\n{job_description}\n\nRESUME:\n{resume_text}"
-        
-        # Retry loop block for network reliability
-        raw_response = None
-        for attempt in range(3):
-            try:
-                chat_completion = client.chat_completion(
-                    messages=[
-                        {"role": "system", "content": system_instructions},
-                        {"role": "user", "content": user_content}
-                    ],
-                    max_tokens=600
-                )
-                raw_response = chat_completion.choices[0].message.content
-                if raw_response:
-                    break
-            except Exception as api_err:
-                if attempt == 2:
-                    raise api_err
-                time.sleep(1)
-        
-        if not raw_response:
-            return fallback_results
-
-        # Lookahead helper to safely extract fields without line bleeding
-        def parse_tag(field_tag, text_source, default=""):
-            pattern = rf"{field_tag}:\s*(.*?)(?=\s*(?:\*\*|\b)(?:NAME|AGE|MATCH_PERCENTAGE|DECISION|MATCHING_SKILLS|MISSING_SKILLS|MISSING|EDUCATION|QUESTIONS):|$)"
-            match = re.search(pattern, text_source, re.DOTALL | re.IGNORECASE)
-            if match:
-                return sanitize_output_text(match.group(1))
-            return default
-
-        parsed_name = parse_tag("NAME", raw_response, extracted_name)
-        parsed_age = parse_tag("AGE", raw_response, "N/A")
-        
-        if len(parsed_age) > 15:
-            digits = re.findall(r'\d+', parsed_age)
-            parsed_age = f"{digits[0]} (Est.)" if digits else "N/A"
-
-        score_text = parse_tag("MATCH_PERCENTAGE", raw_response, "")
-        score_digits = re.sub(r'\D', '', score_text)
-        final_score = int(score_digits[:2]) if score_digits else sim_score
-
-        parsed_decision = parse_tag("DECISION", raw_response, "HIRE" if final_score >= 60 else "REJECT").upper()
-        parsed_matching = parse_tag("MATCHING_SKILLS", raw_response, "Identified core matches.")
-        
-        # Try matching "MISSING_SKILLS" first; if the model outputs "MISSING:", fall back to extracting that instead
-        parsed_missing = parse_tag("MISSING_SKILLS", raw_response, "")
-        if not parsed_missing:
-            parsed_missing = parse_tag("MISSING", raw_response, "None")
-            
-        parsed_edu = parse_tag("EDUCATION", raw_response, "Verified credentials.")
-        
-        q_match = re.search(r"QUESTIONS:\s*(.*)", raw_response, re.DOTALL | re.IGNORECASE)
-        parsed_questions = sanitize_output_text(q_match.group(1)) if q_match else fallback_results["questions"]
-
-        # ONLY FIX: Strip structural HTML parameters or broken tags directly from the questions value
-        if "class=" in parsed_questions or "style=" in parsed_questions:
-            # Drop everything except the explicit text components following numbered patterns
-            just_questions = re.findall(r'(\d+\.\s*[^<\n]+)', parsed_questions)
-            if just_questions:
-                parsed_questions = "\n".join(just_questions)
-
-        return {
-            "name": parsed_name if parsed_name else extracted_name,
-            "age": parsed_age if parsed_age else "N/A",
-            "match_percentage": final_score,
-            "decision": "HIRE" if "HIRE" in parsed_decision else "REJECT",
-            "matching_skills": parsed_matching,
-            "missing_skills": parsed_missing if parsed_missing else "None",
-            "education": parsed_edu,
-            "questions": parsed_questions
-        }
-        
-    except Exception as e:
-        return fallback_results
+# =========================================================
+# QUESTIONS AGENT
+# =========================================================
+def default_questions():
+    return """1. Explain your experience with Python-based automation.
+2. How do you ensure model reliability in production?
+3. Describe a scalable system you built.
+4. How do you handle unstructured data?
+5. Explain a challenge you solved in deployment."""
