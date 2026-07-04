@@ -17,10 +17,6 @@ def extract_text_from_pdf(file_obj):
         return ""
 
 def analyze_resume(resume_text, job_description):
-    """
-    Sends data to Hugging Face Free Endpoint with fallback options.
-    Checks for the HUGGINGFACEHUB_API_TOKEN secret configuration directly.
-    """
     # 1. Setup emergency rule-based calculations first
     name_match = re.search(r"CANDIDATE PROFILE:\s*([^\n]+)", resume_text, re.IGNORECASE)
     if not name_match:
@@ -35,31 +31,39 @@ def analyze_resume(resume_text, job_description):
     sim_score = int((len(common_words) / max(len(jd_words), 1)) * 100)
     sim_score = min(max(sim_score, 15), 95)
 
+    # 2. Check every possible token variant in secrets
+    token_source = "None found"
+    hf_token = None
+    
+    if hasattr(st, "secrets"):
+        if "HUGGINGFACEHUB_API_TOKEN" in st.secrets:
+            hf_token = st.secrets["HUGGINGFACEHUB_API_TOKEN"]
+            token_source = "Found HUGGINGFACEHUB_API_TOKEN in secrets"
+        elif "HF_TOKEN" in st.secrets:
+            hf_token = st.secrets["HF_TOKEN"]
+            token_source = "Found HF_TOKEN in secrets"
+            
+    if not hf_token:
+        hf_token = os.environ.get("HUGGINGFACEHUB_API_TOKEN") or os.environ.get("HF_TOKEN")
+        if hf_token:
+            token_source = "Found in OS Environment Variables"
+
     fallback_results = {
         "name": extracted_name,
         "age": "N/A",
         "match_percentage": sim_score,
         "decision": "HIRE" if sim_score >= 60 else "REJECT",
-        "matching_skills": "Local algorithm processed keywords successfully.",
+        "matching_skills": f"⚠️ FALLBACK ACTIVE. Token Status: {token_source}. Check your Streamlit Cloud Secrets dashboard config.",
         "missing_skills": "Scan complete. Check specific technical requirements manual checklist.",
         "education": "Extracted text profile data.",
         "questions": "1. Describe your direct experience working with Python data automation workflows.\n2. How do you maintain code quality inside collaborative development environments?\n3. What testing methodologies do you employ for analytical tools?\n4. Walk through a recent project architecture you successfully deployed.\n5. How do you handle unstructured data inputs within your processing workflows?"
     }
 
-    # 2. PRIORITY CHECK: Fallback check targeting your specific naming format first
-    hf_token = (
-        st.secrets.get("HUGGINGFACEHUB_API_TOKEN") or 
-        st.secrets.get("HF_TOKEN") or 
-        os.environ.get("HUGGINGFACEHUB_API_TOKEN") or 
-        os.environ.get("HF_TOKEN")
-    )
-
-    # If it still isn't found, drop gracefully to safe local fallback processing
     if not hf_token:
         return fallback_results
 
     try:
-        # Connect explicitly to the free lightweight instruction instance using your token
+        # Connect explicitly to the free lightweight instruction instance
         client = InferenceClient(model="meta-llama/Llama-3.2-3B-Instruct", token=hf_token)
         
         prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
@@ -81,7 +85,6 @@ def analyze_resume(resume_text, job_description):
         
         response = client.text_generation(prompt, max_new_tokens=450, timeout=15)
         
-        # Robust Regex-based Parsing to handle variable outputs safely
         def extract_field(field_name, text_source, default_val=""):
             pattern = rf"{field_name}:\s*(.*?)(?=\n(?:NAME|AGE|MATCH_PERCENTAGE|DECISION|MATCHING_SKILLS|MISSING_SKILLS|EDUCATION|QUESTIONS):|$)"
             match = re.search(pattern, text_source, re.DOTALL | re.IGNORECASE)
@@ -95,7 +98,6 @@ def analyze_resume(resume_text, job_description):
         parsed_missing = extract_field("MISSING_SKILLS", response, "Review criteria details manually.")
         parsed_edu = extract_field("EDUCATION", response, "Verified credentials.")
         
-        # Capture the full block for technical candidate screening questions
         q_match = re.search(r"QUESTIONS:\s*(.*)", response, re.DOTALL | re.IGNORECASE)
         parsed_questions = q_match.group(1).strip() if q_match else fallback_results["questions"]
 
@@ -114,4 +116,6 @@ def analyze_resume(resume_text, job_description):
         }
         
     except Exception as e:
+        # If Hugging Face errors out (e.g., bad token or rate limit), expose the exact error message
+        fallback_results["matching_skills"] = f"❌ API EXCEPTION ERROR: {str(e)}"
         return fallback_results
