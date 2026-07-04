@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import streamlit as st
 from PyPDF2 import PdfReader
 from huggingface_hub import InferenceClient
@@ -86,18 +87,29 @@ QUESTIONS: 1. [Q1]\n2. [Q2]\n3. [Q3]\n4. [Q4]\n5. [Q5]"""
 
         user_content = f"JOB:\n{job_description}\n\nRESUME:\n{resume_text}"
         
-        # Increased max_tokens slightly to stop the 5th resume from truncating/failing
-        chat_completion = client.chat_completion(
-            messages=[
-                {"role": "system", "content": system_instructions},
-                {"role": "user", "content": user_content}
-            ],
-            max_tokens=600
-        )
+        # ADDED: Retry loop system specifically to handle rate limits or API glitches on the last file
+        raw_response = None
+        for attempt in range(3):
+            try:
+                chat_completion = client.chat_completion(
+                    messages=[
+                        {"role": "system", "content": system_instructions},
+                        {"role": "user", "content": user_content}
+                    ],
+                    max_tokens=600
+                )
+                raw_response = chat_completion.choices[0].message.content
+                if raw_response:
+                    break
+            except Exception as api_err:
+                if attempt == 2: # Out of retries, raise error to drop to fallback
+                    raise api_err
+                time.sleep(1) # Wait 1 second before retrying a dropped connection
         
-        raw_response = chat_completion.choices[0].message.content
-        
-        # FIX: The lookahead (?:\s+|\b) stops matching immediately when a keyword is found, even if the model forgot a newline!
+        if not raw_response:
+            return fallback_results
+
+        # Exactly your previous regex lookup patterns completely untouched
         def parse_tag(field_tag, text_source, default=""):
             pattern = rf"{field_tag}:\s*(.*?)(?=\s*(?:\*\*|\b)(?:NAME|AGE|MATCH_PERCENTAGE|DECISION|MATCHING_SKILLS|MISSING_SKILLS|EDUCATION|QUESTIONS):|$)"
             match = re.search(pattern, text_source, re.DOTALL | re.IGNORECASE)
@@ -121,7 +133,6 @@ QUESTIONS: 1. [Q1]\n2. [Q2]\n3. [Q3]\n4. [Q4]\n5. [Q5]"""
         parsed_missing = parse_tag("MISSING_SKILLS", raw_response, "None")
         parsed_edu = parse_tag("EDUCATION", raw_response, "Verified credentials.")
         
-        # Clean isolation of questions block
         q_match = re.search(r"QUESTIONS:\s*(.*)", raw_response, re.DOTALL | re.IGNORECASE)
         parsed_questions = sanitize_output_text(q_match.group(1)) if q_match else fallback_results["questions"]
 
