@@ -1,29 +1,16 @@
 import os
 import re
 import pandas as pd
-from PyPDF2 import PdfReader
-from langchain_community.llms import HuggingFaceHub
-from langchain_core.prompts import PromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-
-# 1. Initialize the LLM Endpoint safely
-# Make sure your HUGGINGFACEHUB_API_TOKEN environment variable is set
-llm = HuggingFaceHub(
-    repo_id="mistralai/Mixtral-8x7B-Instruct-v0.1",
-    model_kwargs={"temperature": 0.2, "max_new_tokens": 1000}
-import os
-import re
-import pandas as pd
 import streamlit as st  
 from PyPDF2 import PdfReader
 from langchain_community.llms import HuggingFaceHub
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
-# 1. Pull the token from your Streamlit Cloud secrets manager safely
+# 1. Fetch token safely from Streamlit secrets or local env variables
 hf_token = st.secrets.get("HUGGINGFACEHUB_API_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
 
-# 2. Fully correct initialization with task, repo, token, and model arguments explicitly set
+# 2. Clean global initialization of the model endpoint with proper pairing syntax
 llm = HuggingFaceHub(
     repo_id="mistralai/Mixtral-8x7B-Instruct-v0.1",
     task="text-generation",
@@ -35,16 +22,27 @@ llm = HuggingFaceHub(
 )
 
 def extract_text_from_pdf(pdf_file):
-    reader = PdfReader(pdf_file)
-    text = ""
-    for page in reader.pages:
-        text += page.extract_text() or ""
-    return text
+    """Safely extracts clean string text from an uploaded PDF binary stream."""
+    try:
+        reader = PdfReader(pdf_file)
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text() or ""
+        return text
+    except Exception as e:
+        st.error(f"Error reading PDF data: {e}")
+        return ""
 
 def analyze_resume(resume_text, job_description):
+    """Main process utilizing standard modern LCEL pipeline architecture."""
+    # Ensure token exists before kicking off execution pipelines
+    if not hf_token:
+        st.error("🔑 Missing Hugging Face Token! Add it to the Secrets Panel on Streamlit Dashboard.")
+        st.stop()
+
     output_parser = StrOutputParser()
     
-    # Chain 1: Profile Breakdown
+    # --- Chain 1: Candidate Basic Information Extraction ---
     profile_template = """
     Extract the candidate's full name and their highest educational degree from the following resume text.
     If you cannot find the name, use 'Unknown Candidate'.
@@ -65,7 +63,7 @@ def analyze_resume(resume_text, job_description):
     if name_match: name = name_match.group(1).strip()
     if edu_match: education = edu_match.group(1).strip()
 
-    # Chain 2: Core ATS Metric Scoring
+    # --- Chain 2: Structural ATS Keyword Analysis ---
     analysis_template = """
     You are an expert ATS (Applicant Tracking System). Compare the Resume against the Job Description (JD).
     1. Provide a Match Percentage (0% to 100%) based on skills, experience, and role alignment.
@@ -96,7 +94,7 @@ def analyze_resume(resume_text, job_description):
     if match_s_match: matching_skills = match_s_match.group(1).strip()
     if miss_s_match: missing_skills = miss_s_match.group(1).strip()
 
-    # Chain 3: Decision & Question Generator
+    # --- Chain 3: Automated Decision & Custom Question Generation ---
     decision_template = """
     Based on a {match_pct}% compatibility match for this Job Description, make a hiring decision.
     If the match is 70% or higher, output 'HIRE'. Otherwise, output 'REJECT'.
@@ -131,5 +129,4 @@ def analyze_resume(resume_text, job_description):
         "questions": questions,
         "matching_skills": matching_skills,
         "missing_skills": missing_skills
-        }lls
     }
