@@ -18,25 +18,16 @@ def extract_text_from_pdf(file_obj):
         return ""
 
 def sanitize_output_text(text):
-    """
-    Cleans up Python dict/list leftovers, stray brackets, single/double quotes, 
-    and markdown stars so that the Streamlit interface displays clean text.
-    """
+    """Cleans up stray markdown brackets and characters."""
     if not text:
         return ""
-    # Remove structural symbols: curly braces, brackets, and raw quotation marks
     cleaned = re.sub(r"[\{\}\[\]'\"]", "", text)
-    # Replace any multi-line gaps or multiple commas with a single clean spacing
     cleaned = re.sub(r",\s*,", ",", cleaned)
-    # Strip any leading/trailing markdown bold asterisks from inside the value blocks
     return cleaned.strip("*").strip()
 
 def analyze_resume(resume_text, job_description):
-    """
-    Scans candidate resume data against target job descriptions using Qwen, 
-    extracting metrics with deep-fallback protection grids.
-    """
-    # 1. Immediate local heuristic backups
+    """Scans candidate resume data with robust keyword boundaries to prevent leaks."""
+    # Emergency local backups
     name_match = re.search(r"CANDIDATE PROFILE:\s*([^\n]+)", resume_text, re.IGNORECASE)
     if not name_match:
         name_match = re.search(r"Name:\s*([^\n]+)", resume_text, re.IGNORECASE)
@@ -50,7 +41,6 @@ def analyze_resume(resume_text, job_description):
     sim_score = int((len(common_words) / max(len(jd_words), 1)) * 100)
     sim_score = min(max(sim_score, 15), 95)
 
-    # Resolve token variables across secrets configurations or environment trees
     hf_token = None
     if hasattr(st, "secrets"):
         if "HUGGINGFACEHUB_API_TOKEN" in st.secrets:
@@ -76,41 +66,40 @@ def analyze_resume(resume_text, job_description):
         return fallback_results
 
     try:
-        # Connect to your preferred model endpoint explicitly
         client = InferenceClient(model="Qwen/Qwen2.5-Coder-7B-Instruct", token=hf_token)
         
         system_instructions = """You are an advanced neural ATS screening engine. Profile the candidate details accurately based on the provided resume text.
         
-CRITICAL EXTRACTION CONTROL RULES:
-1. AGE field: Provide a short estimate only (e.g., "28 (Est.)" or "32"). Do not write full sentences or explanations. 
-2. Content structure: Do NOT return items inside Python lists like ['skill'] or dicts. Write them as standard text lists separated by commas.
-3. Formatting: Do not change field labels. Follow the template precisely.
+CRITICAL FORMAT RULES:
+1. For the AGE field, output ONLY the number or a short estimate (e.g., "31 (Est.)"). Max 3 words.
+2. Ensure every single block label starts on a brand new line.
 
-Respond ONLY using this direct template layout:
+Respond ONLY using this direct template format:
 NAME: [Candidate Name]
 AGE: [Short value or short estimation]
 MATCH_PERCENTAGE: [0-100 number only]
 DECISION: [HIRE or REJECT]
-MATCHING_SKILLS: [Comma separated list of matched technical skills]
-MISSING_SKILLS: [Comma separated list of missing criteria]
-EDUCATION: [Degrees, majors, and universities found]
+MATCHING_SKILLS: [Matched technical skills]
+MISSING_SKILLS: [Missing skills or None]
+EDUCATION: [Degrees and schools found]
 QUESTIONS: 1. [Q1]\n2. [Q2]\n3. [Q3]\n4. [Q4]\n5. [Q5]"""
 
-        user_content = f"JOB DESCRIPTION:\n{job_description}\n\nRESUME TEXT:\n{resume_text}"
+        user_content = f"JOB:\n{job_description}\n\nRESUME:\n{resume_text}"
         
+        # Increased max_tokens slightly to stop the 5th resume from truncating/failing
         chat_completion = client.chat_completion(
             messages=[
                 {"role": "system", "content": system_instructions},
                 {"role": "user", "content": user_content}
             ],
-            max_tokens=550
+            max_tokens=600
         )
         
         raw_response = chat_completion.choices[0].message.content
         
-        # 2. Case-insensitive lookahead parser that captures values until the next major token tag
+        # FIX: The lookahead (?:\s+|\b) stops matching immediately when a keyword is found, even if the model forgot a newline!
         def parse_tag(field_tag, text_source, default=""):
-            pattern = rf"{field_tag}:\s*(.*?)(?=\n(?:NAME|AGE|MATCH_PERCENTAGE|DECISION|MATCHING_SKILLS|MISSING_SKILLS|EDUCATION|QUESTIONS):|$)"
+            pattern = rf"{field_tag}:\s*(.*?)(?=\s*(?:\*\*|\b)(?:NAME|AGE|MATCH_PERCENTAGE|DECISION|MATCHING_SKILLS|MISSING_SKILLS|EDUCATION|QUESTIONS):|$)"
             match = re.search(pattern, text_source, re.DOTALL | re.IGNORECASE)
             if match:
                 return sanitize_output_text(match.group(1))
@@ -119,22 +108,20 @@ QUESTIONS: 1. [Q1]\n2. [Q2]\n3. [Q3]\n4. [Q4]\n5. [Q5]"""
         parsed_name = parse_tag("NAME", raw_response, extracted_name)
         parsed_age = parse_tag("AGE", raw_response, "N/A")
         
-        # Guard against long paragraph age slips by stripping text down to target terms
         if len(parsed_age) > 15:
             digits = re.findall(r'\d+', parsed_age)
             parsed_age = f"{digits[0]} (Est.)" if digits else "N/A"
 
-        # Safe extraction of the percentage match metric integer value
         score_text = parse_tag("MATCH_PERCENTAGE", raw_response, "")
         score_digits = re.sub(r'\D', '', score_text)
         final_score = int(score_digits[:2]) if score_digits else sim_score
 
         parsed_decision = parse_tag("DECISION", raw_response, "HIRE" if final_score >= 60 else "REJECT").upper()
         parsed_matching = parse_tag("MATCHING_SKILLS", raw_response, "Identified core matches.")
-        parsed_missing = parse_tag("MISSING_SKILLS", raw_response, "Review requirements manually.")
+        parsed_missing = parse_tag("MISSING_SKILLS", raw_response, "None")
         parsed_edu = parse_tag("EDUCATION", raw_response, "Verified credentials.")
         
-        # Capture the final questions block clearly till the end of response text strings
+        # Clean isolation of questions block
         q_match = re.search(r"QUESTIONS:\s*(.*)", raw_response, re.DOTALL | re.IGNORECASE)
         parsed_questions = sanitize_output_text(q_match.group(1)) if q_match else fallback_results["questions"]
 
@@ -142,7 +129,7 @@ QUESTIONS: 1. [Q1]\n2. [Q2]\n3. [Q3]\n4. [Q4]\n5. [Q5]"""
             "name": parsed_name if parsed_name else extracted_name,
             "age": parsed_age if parsed_age else "N/A",
             "match_percentage": final_score,
-            "decision": parsed_decision if parsed_decision in ["HIRE", "REJECT"] else ("HIRE" if final_score >= 60 else "REJECT"),
+            "decision": "HIRE" if "HIRE" in parsed_decision else "REJECT",
             "matching_skills": parsed_matching,
             "missing_skills": parsed_missing,
             "education": parsed_edu,
@@ -150,5 +137,4 @@ QUESTIONS: 1. [Q1]\n2. [Q2]\n3. [Q3]\n4. [Q4]\n5. [Q5]"""
         }
         
     except Exception as e:
-        # Fallback processing system execution safety grid
         return fallback_results
