@@ -154,6 +154,9 @@ with st.sidebar:
     
     execute_scan = st.button("🚀 EXECUTE MULTI-AGENT SCAN", use_container_width=True, key="execute_btn")
 
+    st.markdown("---")
+    debug_mode = st.checkbox("🐞 Debug Mode (show raw model output)", value=False)
+
 # ========== MAIN HEADER ==========
 col_title_left, col_title_right = st.columns([1, 1])
 with col_title_left:
@@ -343,6 +346,13 @@ if execute_scan and job_description and uploaded_files:
                     showlegend=False
                 )
                 st.plotly_chart(fig_radar, use_container_width=True, key=f"radar_{result['name'].replace(' ', '_')}")
+            
+            if debug_mode and (result.get("_raw_response") or result.get("_debug_error")):
+                with st.expander("🐞 DEBUG: Raw model output / error"):
+                    if result.get("_debug_error"):
+                        st.error(result["_debug_error"])
+                    if result.get("_raw_response"):
+                        st.code(result["_raw_response"])
             
             st.markdown("---")
             
