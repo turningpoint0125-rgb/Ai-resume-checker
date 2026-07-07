@@ -107,7 +107,8 @@ Resume:
 {resume_text}"""
 
         response = None
-        for attempt in range(2):
+        last_error = None
+        for attempt in range(3):
             try:
                 completion = client.chat_completion(
                     messages=[{"role": "user", "content": prompt}],
@@ -117,26 +118,48 @@ Resume:
                 response = completion.choices[0].message.content
                 if response:
                     break
-            except:
-                if attempt == 1:
+            except Exception as api_err:
+                last_error = f"{type(api_err).__name__}: {api_err}"
+                if attempt == 2:
+                    default_result["_debug_error"] = last_error
                     return default_result
-                time.sleep(1)
+                time.sleep(1.5)
         
         if not response:
+            default_result["_debug_error"] = last_error or "Empty response from model."
             return default_result
         
-        # Parse response line by line
+        # Keep the raw response around for debugging (shown in app if debug mode is on)
         result = default_result.copy()
-        lines = response.split('\n')
+        result["_raw_response"] = response
+        
+        # Clean markdown noise (**bold**, `code`, leading "- " / "1." bullets, etc.)
+        # so key matching below isn't broken by formatting the model adds.
+        cleaned = re.sub(r'[*`#]', '', response)
+        cleaned = re.sub(r'^\s*[-•]\s*', '', cleaned, flags=re.MULTILINE)
+        lines = cleaned.split('\n')
+        
+        parsed_any_field = False
         
         for line in lines:
             line = line.strip()
+            # Strip a leading "1. " / "1)" numbering if present
+            line = re.sub(r'^\d+[\.\)]\s*', '', line)
             if not line or ':' not in line:
                 continue
             
             key, value = line.split(':', 1)
             key = key.strip().upper()
+            key = re.sub(r'[^A-Z0-9_]', '', key)  # drop stray punctuation/spaces, keep digits (TECHNICAL_Q1 etc.)
             value = value.strip()
+            if not value:
+                continue
+            
+            if key in ("CANDIDATE_NAME", "AGE", "EDUCATION", "YEARS_EXPERIENCE", "MATCH_SCORE",
+                       "MATCHING_SKILLS", "MISSING_SKILLS", "HR_RECOMMENDATION", "JUSTIFICATION",
+                       "TECHNICAL_SCORE", "LEADERSHIP_SCORE", "COMMUNICATION_SCORE",
+                       "PROBLEM_SOLVING_SCORE", "INNOVATION_SCORE") or key.startswith("TECHNICAL_Q") or key.startswith("HR_Q"):
+                parsed_any_field = True
             
             if key == "CANDIDATE_NAME":
                 result["name"] = value or result["name"]
@@ -199,7 +222,15 @@ Resume:
                 except:
                     pass
         
+        if not parsed_any_field:
+            # The model responded, but in a format we couldn't parse at all
+            # (e.g. totally different structure). Surface that clearly instead
+            # of silently returning generic placeholder data.
+            result["justification"] = ("⚠ Could not parse model output for this resume — showing "
+                                        "placeholder data. Enable Debug Mode to see the raw response.")
+        
         return result
         
     except Exception as e:
+        default_result["_debug_error"] = f"{type(e).__name__}: {e}"
         return default_result
